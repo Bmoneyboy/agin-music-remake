@@ -1,145 +1,201 @@
-name: Build unsigned iOS IPA
-
-# Produces an UNSIGNED .ipa as a workflow artifact. It cannot be installed
-# directly - sign it on your PC with Sideloadly or AltStore, which will resign
-# it with your own Apple ID.
-#
-# Requires no Apple Developer Program membership. Note that free personal-team
-# signing cannot use App Groups, CarPlay or push entitlements, and the installed
-# app expires after 7 days.
-
-on:
-  workflow_dispatch:
-  push:
-    tags:
-      - 'v*'
-
-jobs:
-  build:
-    # macos-26 (Xcode 26.x) is required: Expo SDK 55's expo-modules-core uses
-    # isolated protocol conformances (`extension UIView: @MainActor ...`), which
-    # is Swift 6.2 syntax. The Xcode 16.4 on macos-15 fails with
-    # "unknown attribute 'MainActor'".
-    runs-on: macos-26
-    timeout-minutes: 60
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Show toolchain versions
-        run: |
-          ls -1 /Applications | grep -i '^Xcode' || true
-          xcodebuild -version
-          swift --version
-
-      - name: Free disk space and report resources
-        run: |
-          echo "=== before ==="
-          df -h /
-          # The image ships several Xcodes and simulator runtimes we never use.
-          # An RN + Pods + DerivedData build can otherwise exhaust the volume,
-          # which kills the compiler with no error message.
-          KEEP=$(xcode-select -p | sed 's|/Contents/Developer||')
-          echo "Keeping $KEEP"
-          for app in /Applications/Xcode*.app; do
-            [ "$app" = "$KEEP" ] || sudo rm -rf "$app"
-          done
-          sudo rm -rf ~/Library/Developer/CoreSimulator/Caches
-          xcrun simctl delete unavailable 2>/dev/null || true
-          echo "=== after ==="
-          df -h /
-          echo "=== memory ==="
-          sysctl -n hw.memsize hw.ncpu
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Install dependencies
-        # patch-package runs on postinstall and is required, so scripts stay on.
-        run: npm install --legacy-peer-deps --no-audit --no-fund
-
-      - name: Generate native iOS project
-        env:
-          # Must differ from the upstream bundle id or signing will collide.
-          IOS_BUNDLE_ID: ${{ vars.IOS_BUNDLE_ID || 'com.example.aginmusic' }}
-        run: npx expo prebuild --platform ios --clean
-
-      - name: Resolve workspace and scheme
-        id: xc
-        run: |
-          WORKSPACE=$(find ios -maxdepth 1 -name '*.xcworkspace' | head -n1)
-          SCHEME=$(basename "$WORKSPACE" .xcworkspace)
-          echo "workspace=$WORKSPACE" >> "$GITHUB_OUTPUT"
-          echo "scheme=$SCHEME" >> "$GITHUB_OUTPUT"
-          echo "Building scheme '$SCHEME' from '$WORKSPACE'"
-
-      - name: Build unsigned archive
-        run: |
-          set -o pipefail
-          # xcpretty is not guaranteed on newer images; fall back gracefully so a
-          # missing formatter never masks a real compile failure.
-          if command -v xcbeautify >/dev/null 2>&1; then FMT=xcbeautify
-          elif command -v xcpretty  >/dev/null 2>&1; then FMT=xcpretty
-          else FMT=cat; fi
-
-          xcodebuild \
-            -workspace "${{ steps.xc.outputs.workspace }}" \
-            -scheme "${{ steps.xc.outputs.scheme }}" \
-            -configuration Release \
-            -sdk iphoneos \
-            -derivedDataPath build \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO \
-            ONLY_ACTIVE_ARCH=NO \
-            2>&1 | tee xcodebuild.log | $FMT
-
-      - name: Surface build errors
-        if: failure()
-        run: |
-          echo "::group::Resources at failure"
-          df -h /
-          vm_stat | head -5
-          echo "::endgroup::"
-
-          echo "::group::Failure lines"
-          grep -nEi "error:|\\*\\* BUILD FAILED|The following build commands failed|failed with a nonzero exit code|No space left on device|Segmentation fault|Killed|signal [0-9]+|out of memory|Abort trap" -A 5 xcodebuild.log \
-            | tail -n 200 \
-            || echo "NO failure markers found - the compiler was almost certainly killed by the OS (disk or memory), not a code error."
-          echo "::endgroup::"
-
-          echo "::group::Last 150 lines"
-          tail -n 150 xcodebuild.log
-          echo "::endgroup::"
-
-      - name: Build a warning-free log for sharing
-        if: always()
-        run: |
-          # Strip the warning/note noise so the artifact is small enough to read.
-          grep -vEi "warning:|note:|^ *[0-9]+ \\||^ *\\||~\\^|^ *\\^" xcodebuild.log > xcodebuild-signal.log || true
-          wc -l xcodebuild.log xcodebuild-signal.log
-
-      - name: Upload raw build log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: xcodebuild-log
-          path: |
-            xcodebuild.log
-            xcodebuild-signal.log
-          retention-days: 14
-
-      - name: Package as IPA
-        run: |
-          APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -n1)
-          echo "Packaging $APP"
-          mkdir -p Payload
-          cp -R "$APP" Payload/
-          zip -qry AginMusic-unsigned.ipa Payload
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: AginMusic-unsigned-ipa
-          path: AginMusic-unsigned.ipa
-          retention-days: 14
+diff --git a/node_modules/react-native-nitro-player/android/src/main/java/com/margelo/nitro/nitroplayer/core/TrackPlayerCore.kt b/node_modules/react-native-nitro-player/android/src/main/java/com/margelo/nitro/nitroplayer/core/TrackPlayerCore.kt
+index 6132a34..1a650d5 100644
+--- a/node_modules/react-native-nitro-player/android/src/main/java/com/margelo/nitro/nitroplayer/core/TrackPlayerCore.kt
++++ b/node_modules/react-native-nitro-player/android/src/main/java/com/margelo/nitro/nitroplayer/core/TrackPlayerCore.kt
+@@ -443,6 +443,29 @@ class TrackPlayerCore private constructor(
+         }
+     }
+ 
++    /**
++     * Reorder a track in the player queue without interrupting playback
++     */
++    fun reorderPlaylist(playlistId: String, oldIndex: Int, newIndex: Int) {
++        handler.post {
++            if (currentPlaylistId == playlistId) {
++                val playlist = playlistManager.getPlaylist(playlistId)
++                if (playlist != null) {
++                    currentTracks = playlist.tracks
++
++                    if (playNextStack.isEmpty() && upNextQueue.isEmpty()) {
++                        if (oldIndex >= 0 && newIndex >= 0 && oldIndex < player.mediaItemCount && newIndex < player.mediaItemCount) {
++                            player.moveMediaItem(oldIndex, newIndex)
++                        }
++                    } else {
++                        // Fallback to full update if there are temporary tracks
++                        updatePlayerQueue(playlist.tracks)
++                    }
++                }
++            }
++        }
++    }
++
+     /**
+      * Get current playlist ID
+      */
+diff --git a/node_modules/react-native-nitro-player/android/src/main/java/com/margelo/nitro/nitroplayer/download/DownloadWorker.kt b/node_modules/react-native-nitro-player/android/src/main/java/com/margelo/nitro/nitroplayer/download/DownloadWorker.kt
+index 1ba2da2..3735b11 100644
+--- a/node_modules/react-native-nitro-player/android/src/main/java/com/margelo/nitro/nitroplayer/download/DownloadWorker.kt
++++ b/node_modules/react-native-nitro-player/android/src/main/java/com/margelo/nitro/nitroplayer/download/DownloadWorker.kt
+@@ -61,6 +61,11 @@ class DownloadWorker(
+                 // Perform download
+                 val localPath = downloadFile(downloadId, trackId, urlString, storageLocation)
+ 
++                // If worker was stopped (pause/cancel), don't report completion or error
++                if (isStopped) {
++                    return@withContext Result.success()
++                }
++
+                 if (localPath != null) {
+                     downloadManager.onComplete(downloadId, trackId, localPath)
+                     Result.success()
+@@ -76,6 +81,11 @@ class DownloadWorker(
+                     Result.retry()
+                 }
+             } catch (e: Exception) {
++                // If worker was stopped (pause/cancel), don't report error or retry
++                if (isStopped) {
++                    return@withContext Result.success()
++                }
++
+                 val errorReason =
+                     when {
+                         e.message?.contains("network", ignoreCase = true) == true -> DownloadErrorReason.NETWORK_ERROR
+@@ -163,6 +173,11 @@ class DownloadWorker(
+                 var lastProgressUpdate = System.currentTimeMillis()
+ 
+                 while (inputStream.read(buffer).also { bytesRead = it } != -1) {
++                    // Check if worker was stopped (pause/cancel) - stop writing immediately
++                    if (isStopped) {
++                        return@withContext null
++                    }
++
+                     outputStream.write(buffer, 0, bytesRead)
+                     bytesDownloaded += bytesRead
+ 
+diff --git a/node_modules/react-native-nitro-player/android/src/main/java/com/margelo/nitro/nitroplayer/playlist/PlaylistManager.kt b/node_modules/react-native-nitro-player/android/src/main/java/com/margelo/nitro/nitroplayer/playlist/PlaylistManager.kt
+index ebc150e..7598a1d 100644
+--- a/node_modules/react-native-nitro-player/android/src/main/java/com/margelo/nitro/nitroplayer/playlist/PlaylistManager.kt
++++ b/node_modules/react-native-nitro-player/android/src/main/java/com/margelo/nitro/nitroplayer/playlist/PlaylistManager.kt
+@@ -296,7 +296,7 @@ class PlaylistManager private constructor(
+ 
+         // Update ExoPlayer if this is the current playlist
+         if (currentPlaylistId == playlistId) {
+-            TrackPlayerCore.getInstance(context)?.updatePlaylist(playlistId)
++            TrackPlayerCore.getInstance(context)?.reorderPlaylist(playlistId, oldIndex, newIndex)
+         }
+ 
+         return true
+diff --git a/node_modules/react-native-nitro-player/ios/core/TrackPlayerCore.swift b/node_modules/react-native-nitro-player/ios/core/TrackPlayerCore.swift
+index de18c45..0911a56 100644
+--- a/node_modules/react-native-nitro-player/ios/core/TrackPlayerCore.swift
++++ b/node_modules/react-native-nitro-player/ios/core/TrackPlayerCore.swift
+@@ -638,6 +638,29 @@ class TrackPlayerCore: NSObject {
+     }
+   }
+ 
++  func reorderPlaylist(playlistId: String, oldIndex: Int, newIndex: Int) {
++    DispatchQueue.main.async { [weak self] in
++      guard let self = self else { return }
++      if self.currentPlaylistId == playlistId {
++        let playlist = self.playlistManager.getPlaylist(playlistId: playlistId)
++        if let playlist = playlist {
++          self.currentTracks = playlist.tracks
++
++          // Update currentTrackIndex if necessary
++          if self.currentTrackIndex == oldIndex {
++            self.currentTrackIndex = newIndex
++          } else if self.currentTrackIndex > oldIndex && self.currentTrackIndex <= newIndex {
++            self.currentTrackIndex -= 1
++          } else if self.currentTrackIndex >= newIndex && self.currentTrackIndex < oldIndex {
++            self.currentTrackIndex += 1
++          }
++
++          self.rebuildAVQueueFromCurrentPosition()
++        }
++      }
++    }
++  }
++
+   // MARK: - Public Methods
+ 
+   func getCurrentPlaylistId() -> String? {
+diff --git a/node_modules/react-native-nitro-player/ios/equalizer/EqualizerCore.swift b/node_modules/react-native-nitro-player/ios/equalizer/EqualizerCore.swift
+index 4052438..ac3aa7a 100644
+--- a/node_modules/react-native-nitro-player/ios/equalizer/EqualizerCore.swift
++++ b/node_modules/react-native-nitro-player/ios/equalizer/EqualizerCore.swift
+@@ -130,14 +130,31 @@ class EqualizerCore {
+         process: tapProcessCallback
+       )
+ 
+-      var tap: MTAudioProcessingTap?
++      // MTAudioProcessingTapCreate's out-parameter changed shape in the iOS 26
++      // SDK: it is now audited and yields MTAudioProcessingTap? directly,
++      // whereas older SDKs handed back an Unmanaged reference. Pick per
++      // toolchain so this builds on both Xcode 16 and Xcode 26.
++      #if compiler(>=6.2)
++      var tapRef: MTAudioProcessingTap?
++      #else
++      var tapRef: Unmanaged<MTAudioProcessingTap>?
++      #endif
++
+       let createStatus = MTAudioProcessingTapCreate(
+         kCFAllocatorDefault,
+         &callbacks,
+         kMTAudioProcessingTapCreationFlag_PreEffects,
+-        &tap
++        &tapRef
+       )
+ 
++      #if compiler(>=6.2)
++      // The audited API already returns a managed reference.
++      let tap: MTAudioProcessingTap? = tapRef
++      #else
++      // Create returns +1; takeRetainedValue consumes that ownership.
++      let tap: MTAudioProcessingTap? = tapRef?.takeRetainedValue()
++      #endif
++
+       guard createStatus == noErr, let audioTap = tap else {
+         NitroPlayerLogger.log("EqualizerCore", "❌ Failed to create audio processing tap, status: \(createStatus)")
+         return
+diff --git a/node_modules/react-native-nitro-player/ios/playlist/PlaylistManager.swift b/node_modules/react-native-nitro-player/ios/playlist/PlaylistManager.swift
+index 7d5bb08..bcd02e1 100644
+--- a/node_modules/react-native-nitro-player/ios/playlist/PlaylistManager.swift
++++ b/node_modules/react-native-nitro-player/ios/playlist/PlaylistManager.swift
+@@ -251,7 +251,7 @@ class PlaylistManager {
+ 
+     // Update TrackPlayerCore if this is the current playlist
+     if currentPlaylistId == playlistId {
+-      TrackPlayerCore.shared.updatePlaylist(playlistId: playlistId)
++      TrackPlayerCore.shared.reorderPlaylist(playlistId: playlistId, oldIndex: oldIndex, newIndex: newIndex)
+     }
+ 
+     return true
+diff --git a/node_modules/react-native-nitro-player/src/hooks/useDownloadedTracks.ts b/node_modules/react-native-nitro-player/src/hooks/useDownloadedTracks.ts
+index 5c7f61f..ccd9dc6 100644
+--- a/node_modules/react-native-nitro-player/src/hooks/useDownloadedTracks.ts
++++ b/node_modules/react-native-nitro-player/src/hooks/useDownloadedTracks.ts
+@@ -64,25 +64,8 @@ export function useDownloadedTracks(): UseDownloadedTracksResult {
+     isMounted.current = true
+     refresh()
+ 
+-    const unsubscribeComplete = downloadCallbackManager.subscribeToComplete(
+-      () => {
+-        refresh()
+-      }
+-    )
+-
+-    const unsubscribeStateChange =
+-      downloadCallbackManager.subscribeToStateChange(
+-        (_downloadId, _trackId, state) => {
+-          if (state === 'completed') {
+-            refresh()
+-          }
+-        }
+-      )
+-
+     return () => {
+       isMounted.current = false
+-      unsubscribeComplete()
+-      unsubscribeStateChange()
+     }
+   }, [refresh])
