@@ -1,0 +1,186 @@
+diff --git a/node_modules/react-native-nitro-player/android/src/main/java/com/margelo/nitro/nitroplayer/core/TrackPlayerCore.kt b/node_modules/react-native-nitro-player/android/src/main/java/com/margelo/nitro/nitroplayer/core/TrackPlayerCore.kt
+index 6132a34..1a650d5 100644
+--- a/node_modules/react-native-nitro-player/android/src/main/java/com/margelo/nitro/nitroplayer/core/TrackPlayerCore.kt
++++ b/node_modules/react-native-nitro-player/android/src/main/java/com/margelo/nitro/nitroplayer/core/TrackPlayerCore.kt
+@@ -443,6 +443,29 @@ class TrackPlayerCore private constructor(
+         }
+     }
+ 
++    /**
++     * Reorder a track in the player queue without interrupting playback
++     */
++    fun reorderPlaylist(playlistId: String, oldIndex: Int, newIndex: Int) {
++        handler.post {
++            if (currentPlaylistId == playlistId) {
++                val playlist = playlistManager.getPlaylist(playlistId)
++                if (playlist != null) {
++                    currentTracks = playlist.tracks
++
++                    if (playNextStack.isEmpty() && upNextQueue.isEmpty()) {
++                        if (oldIndex >= 0 && newIndex >= 0 && oldIndex < player.mediaItemCount && newIndex < player.mediaItemCount) {
++                            player.moveMediaItem(oldIndex, newIndex)
++                        }
++                    } else {
++                        // Fallback to full update if there are temporary tracks
++                        updatePlayerQueue(playlist.tracks)
++                    }
++                }
++            }
++        }
++    }
++
+     /**
+      * Get current playlist ID
+      */
+diff --git a/node_modules/react-native-nitro-player/android/src/main/java/com/margelo/nitro/nitroplayer/download/DownloadWorker.kt b/node_modules/react-native-nitro-player/android/src/main/java/com/margelo/nitro/nitroplayer/download/DownloadWorker.kt
+index 1ba2da2..3735b11 100644
+--- a/node_modules/react-native-nitro-player/android/src/main/java/com/margelo/nitro/nitroplayer/download/DownloadWorker.kt
++++ b/node_modules/react-native-nitro-player/android/src/main/java/com/margelo/nitro/nitroplayer/download/DownloadWorker.kt
+@@ -61,6 +61,11 @@ class DownloadWorker(
+                 // Perform download
+                 val localPath = downloadFile(downloadId, trackId, urlString, storageLocation)
+ 
++                // If worker was stopped (pause/cancel), don't report completion or error
++                if (isStopped) {
++                    return@withContext Result.success()
++                }
++
+                 if (localPath != null) {
+                     downloadManager.onComplete(downloadId, trackId, localPath)
+                     Result.success()
+@@ -76,6 +81,11 @@ class DownloadWorker(
+                     Result.retry()
+                 }
+             } catch (e: Exception) {
++                // If worker was stopped (pause/cancel), don't report error or retry
++                if (isStopped) {
++                    return@withContext Result.success()
++                }
++
+                 val errorReason =
+                     when {
+                         e.message?.contains("network", ignoreCase = true) == true -> DownloadErrorReason.NETWORK_ERROR
+@@ -163,6 +173,11 @@ class DownloadWorker(
+                 var lastProgressUpdate = System.currentTimeMillis()
+ 
+                 while (inputStream.read(buffer).also { bytesRead = it } != -1) {
++                    // Check if worker was stopped (pause/cancel) - stop writing immediately
++                    if (isStopped) {
++                        return@withContext null
++                    }
++
+                     outputStream.write(buffer, 0, bytesRead)
+                     bytesDownloaded += bytesRead
+ 
+diff --git a/node_modules/react-native-nitro-player/android/src/main/java/com/margelo/nitro/nitroplayer/playlist/PlaylistManager.kt b/node_modules/react-native-nitro-player/android/src/main/java/com/margelo/nitro/nitroplayer/playlist/PlaylistManager.kt
+index ebc150e..7598a1d 100644
+--- a/node_modules/react-native-nitro-player/android/src/main/java/com/margelo/nitro/nitroplayer/playlist/PlaylistManager.kt
++++ b/node_modules/react-native-nitro-player/android/src/main/java/com/margelo/nitro/nitroplayer/playlist/PlaylistManager.kt
+@@ -296,7 +296,7 @@ class PlaylistManager private constructor(
+ 
+         // Update ExoPlayer if this is the current playlist
+         if (currentPlaylistId == playlistId) {
+-            TrackPlayerCore.getInstance(context)?.updatePlaylist(playlistId)
++            TrackPlayerCore.getInstance(context)?.reorderPlaylist(playlistId, oldIndex, newIndex)
+         }
+ 
+         return true
+diff --git a/node_modules/react-native-nitro-player/ios/core/TrackPlayerCore.swift b/node_modules/react-native-nitro-player/ios/core/TrackPlayerCore.swift
+index de18c45..0911a56 100644
+--- a/node_modules/react-native-nitro-player/ios/core/TrackPlayerCore.swift
++++ b/node_modules/react-native-nitro-player/ios/core/TrackPlayerCore.swift
+@@ -638,6 +638,29 @@ class TrackPlayerCore: NSObject {
+     }
+   }
+ 
++  func reorderPlaylist(playlistId: String, oldIndex: Int, newIndex: Int) {
++    DispatchQueue.main.async { [weak self] in
++      guard let self = self else { return }
++      if self.currentPlaylistId == playlistId {
++        let playlist = self.playlistManager.getPlaylist(playlistId: playlistId)
++        if let playlist = playlist {
++          self.currentTracks = playlist.tracks
++
++          // Update currentTrackIndex if necessary
++          if self.currentTrackIndex == oldIndex {
++            self.currentTrackIndex = newIndex
++          } else if self.currentTrackIndex > oldIndex && self.currentTrackIndex <= newIndex {
++            self.currentTrackIndex -= 1
++          } else if self.currentTrackIndex >= newIndex && self.currentTrackIndex < oldIndex {
++            self.currentTrackIndex += 1
++          }
++
++          self.rebuildAVQueueFromCurrentPosition()
++        }
++      }
++    }
++  }
++
+   // MARK: - Public Methods
+ 
+   func getCurrentPlaylistId() -> String? {
+diff --git a/node_modules/react-native-nitro-player/ios/equalizer/EqualizerCore.swift b/node_modules/react-native-nitro-player/ios/equalizer/EqualizerCore.swift
+index 4052438..24da73b 100644
+--- a/node_modules/react-native-nitro-player/ios/equalizer/EqualizerCore.swift
++++ b/node_modules/react-native-nitro-player/ios/equalizer/EqualizerCore.swift
+@@ -130,7 +130,7 @@ class EqualizerCore {
+         process: tapProcessCallback
+       )
+ 
+-      var tap: MTAudioProcessingTap?
++      var tap: Unmanaged<MTAudioProcessingTap>?
+       let createStatus = MTAudioProcessingTapCreate(
+         kCFAllocatorDefault,
+         &callbacks,
+@@ -138,7 +138,7 @@ class EqualizerCore {
+         &tap
+       )
+ 
+-      guard createStatus == noErr, let audioTap = tap else {
++      guard createStatus == noErr, let audioTap = tap?.takeRetainedValue() else {
+         NitroPlayerLogger.log("EqualizerCore", "❌ Failed to create audio processing tap, status: \(createStatus)")
+         return
+       }
+diff --git a/node_modules/react-native-nitro-player/ios/playlist/PlaylistManager.swift b/node_modules/react-native-nitro-player/ios/playlist/PlaylistManager.swift
+index 7d5bb08..bcd02e1 100644
+--- a/node_modules/react-native-nitro-player/ios/playlist/PlaylistManager.swift
++++ b/node_modules/react-native-nitro-player/ios/playlist/PlaylistManager.swift
+@@ -251,7 +251,7 @@ class PlaylistManager {
+ 
+     // Update TrackPlayerCore if this is the current playlist
+     if currentPlaylistId == playlistId {
+-      TrackPlayerCore.shared.updatePlaylist(playlistId: playlistId)
++      TrackPlayerCore.shared.reorderPlaylist(playlistId: playlistId, oldIndex: oldIndex, newIndex: newIndex)
+     }
+ 
+     return true
+diff --git a/node_modules/react-native-nitro-player/src/hooks/useDownloadedTracks.ts b/node_modules/react-native-nitro-player/src/hooks/useDownloadedTracks.ts
+index 5c7f61f..ccd9dc6 100644
+--- a/node_modules/react-native-nitro-player/src/hooks/useDownloadedTracks.ts
++++ b/node_modules/react-native-nitro-player/src/hooks/useDownloadedTracks.ts
+@@ -64,25 +64,8 @@ export function useDownloadedTracks(): UseDownloadedTracksResult {
+     isMounted.current = true
+     refresh()
+ 
+-    const unsubscribeComplete = downloadCallbackManager.subscribeToComplete(
+-      () => {
+-        refresh()
+-      }
+-    )
+-
+-    const unsubscribeStateChange =
+-      downloadCallbackManager.subscribeToStateChange(
+-        (_downloadId, _trackId, state) => {
+-          if (state === 'completed') {
+-            refresh()
+-          }
+-        }
+-      )
+-
+     return () => {
+       isMounted.current = false
+-      unsubscribeComplete()
+-      unsubscribeStateChange()
+     }
+   }, [refresh])
+ 

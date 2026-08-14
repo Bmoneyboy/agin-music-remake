@@ -1,0 +1,74 @@
+name: Build unsigned iOS IPA
+
+# Produces an UNSIGNED .ipa as a workflow artifact. It cannot be installed
+# directly - sign it on your PC with Sideloadly or AltStore, which will resign
+# it with your own Apple ID.
+#
+# Requires no Apple Developer Program membership. Note that free personal-team
+# signing cannot use App Groups, CarPlay or push entitlements, and the installed
+# app expires after 7 days.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        # patch-package runs on postinstall and is required, so scripts stay on.
+        run: npm install --legacy-peer-deps --no-audit --no-fund
+
+      - name: Generate native iOS project
+        env:
+          # Must differ from the upstream bundle id or signing will collide.
+          IOS_BUNDLE_ID: ${{ vars.IOS_BUNDLE_ID || 'com.example.aginmusic' }}
+        run: npx expo prebuild --platform ios --clean
+
+      - name: Resolve workspace and scheme
+        id: xc
+        run: |
+          WORKSPACE=$(find ios -maxdepth 1 -name '*.xcworkspace' | head -n1)
+          SCHEME=$(basename "$WORKSPACE" .xcworkspace)
+          echo "workspace=$WORKSPACE" >> "$GITHUB_OUTPUT"
+          echo "scheme=$SCHEME" >> "$GITHUB_OUTPUT"
+          echo "Building scheme '$SCHEME' from '$WORKSPACE'"
+
+      - name: Build unsigned archive
+        run: |
+          xcodebuild \
+            -workspace "${{ steps.xc.outputs.workspace }}" \
+            -scheme "${{ steps.xc.outputs.scheme }}" \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=NO \
+            | xcpretty && exit ${PIPESTATUS[0]}
+
+      - name: Package as IPA
+        run: |
+          APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -n1)
+          echo "Packaging $APP"
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qry AginMusic-unsigned.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AginMusic-unsigned-ipa
+          path: AginMusic-unsigned.ipa
+          retention-days: 14
