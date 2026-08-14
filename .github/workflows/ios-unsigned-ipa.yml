@@ -74,7 +74,25 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
             ONLY_ACTIVE_ARCH=NO \
-            | $FMT
+            2>&1 | tee xcodebuild.log | $FMT
+
+      - name: Surface build errors
+        if: failure()
+        run: |
+          echo "::group::Error lines"
+          grep -nE "error:|\*\* BUILD FAILED|The following build commands failed" -A 5 xcodebuild.log | tail -n 200 || echo "No 'error:' lines found - failure was probably in a script phase."
+          echo "::endgroup::"
+          echo "::group::Last 100 lines"
+          tail -n 100 xcodebuild.log
+          echo "::endgroup::"
+
+      - name: Upload raw build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: xcodebuild.log
+          retention-days: 14
 
       - name: Package as IPA
         run: |
