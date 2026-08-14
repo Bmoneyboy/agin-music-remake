@@ -16,11 +16,21 @@ on:
 
 jobs:
   build:
-    runs-on: macos-15
+    # macos-26 (Xcode 26.x) is required: Expo SDK 55's expo-modules-core uses
+    # isolated protocol conformances (`extension UIView: @MainActor ...`), which
+    # is Swift 6.2 syntax. The Xcode 16.4 on macos-15 fails with
+    # "unknown attribute 'MainActor'".
+    runs-on: macos-26
     timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Show toolchain versions
+        run: |
+          ls -1 /Applications | grep -i '^Xcode' || true
+          xcodebuild -version
+          swift --version
 
       - uses: actions/setup-node@v4
         with:
@@ -47,6 +57,13 @@ jobs:
 
       - name: Build unsigned archive
         run: |
+          set -o pipefail
+          # xcpretty is not guaranteed on newer images; fall back gracefully so a
+          # missing formatter never masks a real compile failure.
+          if command -v xcbeautify >/dev/null 2>&1; then FMT=xcbeautify
+          elif command -v xcpretty  >/dev/null 2>&1; then FMT=xcpretty
+          else FMT=cat; fi
+
           xcodebuild \
             -workspace "${{ steps.xc.outputs.workspace }}" \
             -scheme "${{ steps.xc.outputs.scheme }}" \
@@ -57,7 +74,7 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
             ONLY_ACTIVE_ARCH=NO \
-            | xcpretty && exit ${PIPESTATUS[0]}
+            | $FMT
 
       - name: Package as IPA
         run: |
