@@ -32,6 +32,25 @@ jobs:
           xcodebuild -version
           swift --version
 
+      - name: Free disk space and report resources
+        run: |
+          echo "=== before ==="
+          df -h /
+          # The image ships several Xcodes and simulator runtimes we never use.
+          # An RN + Pods + DerivedData build can otherwise exhaust the volume,
+          # which kills the compiler with no error message.
+          KEEP=$(xcode-select -p | sed 's|/Contents/Developer||')
+          echo "Keeping $KEEP"
+          for app in /Applications/Xcode*.app; do
+            [ "$app" = "$KEEP" ] || sudo rm -rf "$app"
+          done
+          sudo rm -rf ~/Library/Developer/CoreSimulator/Caches
+          xcrun simctl delete unavailable 2>/dev/null || true
+          echo "=== after ==="
+          df -h /
+          echo "=== memory ==="
+          sysctl -n hw.memsize hw.ncpu
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -79,19 +98,36 @@ jobs:
       - name: Surface build errors
         if: failure()
         run: |
-          echo "::group::Error lines"
-          grep -nE "error:|\*\* BUILD FAILED|The following build commands failed" -A 5 xcodebuild.log | tail -n 200 || echo "No 'error:' lines found - failure was probably in a script phase."
+          echo "::group::Resources at failure"
+          df -h /
+          vm_stat | head -5
           echo "::endgroup::"
-          echo "::group::Last 100 lines"
-          tail -n 100 xcodebuild.log
+
+          echo "::group::Failure lines"
+          grep -nEi "error:|\\*\\* BUILD FAILED|The following build commands failed|failed with a nonzero exit code|No space left on device|Segmentation fault|Killed|signal [0-9]+|out of memory|Abort trap" -A 5 xcodebuild.log \
+            | tail -n 200 \
+            || echo "NO failure markers found - the compiler was almost certainly killed by the OS (disk or memory), not a code error."
           echo "::endgroup::"
+
+          echo "::group::Last 150 lines"
+          tail -n 150 xcodebuild.log
+          echo "::endgroup::"
+
+      - name: Build a warning-free log for sharing
+        if: always()
+        run: |
+          # Strip the warning/note noise so the artifact is small enough to read.
+          grep -vEi "warning:|note:|^ *[0-9]+ \\||^ *\\||~\\^|^ *\\^" xcodebuild.log > xcodebuild-signal.log || true
+          wc -l xcodebuild.log xcodebuild-signal.log
 
       - name: Upload raw build log
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: xcodebuild-log
-          path: xcodebuild.log
+          path: |
+            xcodebuild.log
+            xcodebuild-signal.log
           retention-days: 14
 
       - name: Package as IPA
