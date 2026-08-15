@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 diff --git a/node_modules/react-native-nitro-player/android/src/main/java/com/margelo/nitro/nitroplayer/core/TrackPlayerCore.kt b/node_modules/react-native-nitro-player/android/src/main/java/com/margelo/nitro/nitroplayer/core/TrackPlayerCore.kt
 index 6132a34..1a650d5 100644
 --- a/node_modules/react-native-nitro-player/android/src/main/java/com/margelo/nitro/nitroplayer/core/TrackPlayerCore.kt
@@ -199,3 +200,99 @@ index 5c7f61f..ccd9dc6 100644
 -      unsubscribeStateChange()
      }
    }, [refresh])
+=======
+name: Build unsigned iOS IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain versions
+        run: |
+          xcodebuild -version
+          swift --version
+          df -h /
+
+      - name: Free disk space
+        run: |
+          KEEP=$(xcode-select -p | sed 's|/Contents/Developer||')
+          for app in /Applications/Xcode*.app; do
+            if [ "$app" != "$KEEP" ]; then sudo rm -rf "$app"; fi
+          done
+          sudo rm -rf ~/Library/Developer/CoreSimulator/Caches
+          df -h /
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps --no-audit --no-fund
+
+      - name: Prebuild iOS project
+        env:
+          IOS_BUNDLE_ID: ${{ vars.IOS_BUNDLE_ID || 'com.example.aginmusic' }}
+        run: npx expo prebuild --platform ios --clean
+
+      - name: Resolve workspace and scheme
+        id: xc
+        run: |
+          WORKSPACE=$(find ios -maxdepth 1 -name '*.xcworkspace' | head -n1)
+          SCHEME=$(basename "$WORKSPACE" .xcworkspace)
+          echo "workspace=$WORKSPACE" >> "$GITHUB_OUTPUT"
+          echo "scheme=$SCHEME" >> "$GITHUB_OUTPUT"
+
+      - name: Build unsigned archive
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -workspace "${{ steps.xc.outputs.workspace }}" \
+            -scheme "${{ steps.xc.outputs.scheme }}" \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=NO \
+            2>&1 | tee xcodebuild.log | xcbeautify
+
+      - name: Show failures
+        if: failure()
+        run: |
+          df -h /
+          grep -nEi "error:|BUILD FAILED|nonzero exit code|No space left|Killed|Segmentation" -A 5 xcodebuild.log | tail -n 150 || echo "no markers found"
+
+      - name: Strip warnings from log
+        if: always()
+        run: grep -vEi "warning:|note:" xcodebuild.log > xcodebuild-signal.log || true
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: |
+            xcodebuild.log
+            xcodebuild-signal.log
+
+      - name: Package IPA
+        run: |
+          APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -n1)
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qry AginMusic-unsigned.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AginMusic-unsigned-ipa
+          path: AginMusic-unsigned.ipa
+          retention-days: 14
+>>>>>>> abbca5f (ci: fix workflow yaml)
