@@ -30,6 +30,28 @@ df -h /
 echo "===== dependencies ====="
 npm install --legacy-peer-deps --no-audit --no-fund || finish 1
 
+echo "===== xcode 26 compatibility fixups ====="
+# react-native-nitro-player (or its patch) declares the MTAudioProcessingTapCreate
+# out-parameter as Unmanaged<MTAudioProcessingTap>?. The iOS 26 SDK audits that
+# API and expects MTAudioProcessingTap? directly, so the build fails with:
+#   cannot convert value of type 'Unmanaged<MTAudioProcessingTap>?'
+#   to expected argument type 'MTAudioProcessingTap?'
+# Applied here rather than via patch-package so the build does not depend on the
+# patch file being up to date. Idempotent: a no-op if already correct.
+EQ=node_modules/react-native-nitro-player/ios/equalizer/EqualizerCore.swift
+if [ -f "$EQ" ]; then
+  if grep -q 'var tap: Unmanaged<MTAudioProcessingTap>?' "$EQ"; then
+    sed -i '' 's/var tap: Unmanaged<MTAudioProcessingTap>?/var tap: MTAudioProcessingTap?/' "$EQ"
+    sed -i '' 's/tap?\.takeRetainedValue()/tap/' "$EQ"
+    echo "applied MTAudioProcessingTap fixup"
+  else
+    echo "MTAudioProcessingTap already in audited form, nothing to do"
+  fi
+  grep -n "MTAudioProcessingTap?" "$EQ" | head -3
+else
+  echo "WARNING: $EQ not found"
+fi
+
 echo "===== prebuild ====="
 export IOS_BUNDLE_ID="${IOS_BUNDLE_ID:-com.bmoney.aginmusic}"
 echo "bundle id: $IOS_BUNDLE_ID"
