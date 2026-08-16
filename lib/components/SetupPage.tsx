@@ -31,10 +31,11 @@ export function SetupPageContent({ icon: Icon, title, description, children, act
             flex: 1,
         },
         bottomActions: {
-            position: 'absolute',
-            left: 15,
-            right: 15,
-            bottom: 15,
+            // Deliberately in normal flow rather than position:'absolute'.
+            // Absolutely positioned children are not lifted reliably by
+            // KeyboardAvoidingView, so the primary button ended up underneath
+            // the keyboard with no way to reach it.
+            marginTop: 15,
             zIndex: 1,
         },
     }), []);
@@ -78,7 +79,11 @@ export function SetupPage({ ...props }: SetupPageProps) {
 
     return (
         <SafeAreaView style={styles.main}>
-            <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+            <KeyboardAvoidingView
+                style={styles.container}
+                behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+                keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+            >
                 <SetupPageContent {...props} />
             </KeyboardAvoidingView>
         </SafeAreaView>
